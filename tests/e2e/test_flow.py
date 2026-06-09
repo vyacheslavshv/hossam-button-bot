@@ -252,3 +252,52 @@ async def test_group_gets_only_the_post_no_fallback_spam(
         assert bot_posts == 1, f"expected exactly 1 bot post in the group, got {bot_posts}"
     finally:
         await tg_client(DeleteChannelRequest(group))
+
+
+async def test_saved_post_list_publish_delete(
+    tg_client, test_bot_username, test_channel, _wait_for_bot
+):
+    # build -> auto-saved -> appears in /list -> re-publish from the list -> delete it
+    bot = await tg_client.get_entity(test_bot_username)
+    marker = "SAVEME-marker-post"
+
+    await send_and_wait(tg_client, bot, "/new")
+    await send_and_wait(tg_client, bot, marker)              # content (text) -> becomes the label
+    await send_and_wait(tg_client, bot, "Btn")               # button label
+    color_prompt = await send_and_wait(tg_client, bot, "https://example.com")
+    await find_button(color_prompt, "Blue").click()
+    more = await wait_for_msg_with_button(tg_client, bot, "Add another", after_id=color_prompt.id)
+    await find_button(more, "Done").click()
+    await wait_for_msg_with_button(tg_client, bot, CHANNEL_TITLE, after_id=more.id)  # saved + picker
+
+    # /list shows it
+    listing = await send_and_wait(tg_client, bot, "/list")
+    assert "saved posts" in listing.message.lower(), listing.message
+    assert any("SAVEME" in t for t in button_texts(listing)), button_texts(listing)
+
+    # open it -> bot sends a preview + a detail panel (Publish / Delete / Back)
+    await find_button(listing, "SAVEME").click()
+    detail = await wait_for_msg_with_button(tg_client, bot, "Publish", after_id=listing.id)
+
+    # re-publish the saved post to the channel
+    await find_button(detail, "Publish").click()
+    picker = await wait_for_msg_with_button(tg_client, bot, CHANNEL_TITLE, after_id=detail.id)
+    after = await latest_msg_id(tg_client, bot)
+    await find_button(picker, CHANNEL_TITLE).click()
+    confirm = await wait_for_reply(tg_client, bot, after)
+    assert "Published" in confirm.message, confirm.message
+    in_channel = await tg_client.get_messages(test_channel, limit=5)
+    assert any(marker in (m.message or "") for m in in_channel), [m.message for m in in_channel]
+
+    # delete it
+    listing2 = await send_and_wait(tg_client, bot, "/list")
+    await find_button(listing2, "SAVEME").click()
+    detail2 = await wait_for_msg_with_button(tg_client, bot, "Delete", after_id=listing2.id)
+    await find_button(detail2, "Delete").click()
+    confirm_del = await wait_for_msg_with_button(tg_client, bot, "Yes, delete", after_id=detail2.id)
+    await find_button(confirm_del, "Yes, delete").click()
+
+    # gone from the most-recent list page
+    await asyncio.sleep(1)
+    listing3 = await send_and_wait(tg_client, bot, "/list")
+    assert not any("SAVEME" in t for t in button_texts(listing3)), button_texts(listing3)

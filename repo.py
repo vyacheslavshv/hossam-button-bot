@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+import json
+
+from sqlalchemy import func, select
 
 from db import session_scope
-from models import Channel
+from models import Channel, Post
 
 
 async def upsert_channel(
@@ -57,3 +59,61 @@ async def list_channels(added_by: int) -> list[Channel]:
 async def get_channel(chat_id: int) -> Channel | None:
     async with session_scope() as s:
         return await s.get(Channel, chat_id)
+
+
+# --------------------------------------------------------------- saved posts
+
+async def save_post(
+    *,
+    user_id: int,
+    content_chat_id: int,
+    content_message_id: int,
+    buttons: list[dict],
+    label: str,
+) -> int:
+    async with session_scope() as s:
+        p = Post(
+            user_id=user_id,
+            content_chat_id=content_chat_id,
+            content_message_id=content_message_id,
+            buttons_json=json.dumps(buttons, ensure_ascii=False),
+            label=label or "",
+        )
+        s.add(p)
+        await s.flush()
+        return p.id
+
+
+async def count_posts(user_id: int) -> int:
+    async with session_scope() as s:
+        res = await s.execute(
+            select(func.count()).select_from(Post).where(Post.user_id == user_id)
+        )
+        return int(res.scalar_one())
+
+
+async def list_posts(user_id: int, *, limit: int, offset: int) -> list[Post]:
+    async with session_scope() as s:
+        res = await s.execute(
+            select(Post)
+            .where(Post.user_id == user_id)
+            .order_by(Post.created_at.desc(), Post.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(res.scalars().all())
+
+
+async def get_post(post_id: int, user_id: int) -> Post | None:
+    async with session_scope() as s:
+        p = await s.get(Post, post_id)
+        return p if (p is not None and p.user_id == user_id) else None
+
+
+async def delete_post(post_id: int, user_id: int) -> bool:
+    async with session_scope() as s:
+        p = await s.get(Post, post_id)
+        if p is None or p.user_id != user_id:
+            return False
+        await s.delete(p)
+        return True

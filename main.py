@@ -27,7 +27,8 @@ async def main() -> None:
     try:
         await bot.set_my_commands([
             BotCommand(command="new", description="Create a post"),
-            BotCommand(command="cancel", description="Cancel the current post"),
+            BotCommand(command="list", description="My saved posts"),
+            BotCommand(command="cancel", description="Cancel the current action"),
         ])
     except Exception as e:  # noqa: BLE001 — cosmetic, must not block startup
         logger.warning(f"set_my_commands failed: {e}")

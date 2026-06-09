@@ -1,15 +1,19 @@
 """All bot logic.
 
 Flow: /start -> Create post -> send content (text or one photo/video/file) ->
-for each button: label -> link -> color, then "add another / done" ->
-preview + pick a channel -> the post is copied into the channel.
+for each button: label -> link -> color, then "add another / done" -> the post is
+saved -> preview + pick a channel. Saved posts live in /list, where they can be
+re-published or deleted.
 
 Buttons are stacked one per row (single column). The bot does NOT pin: with a
-single button the user can pin the post themselves to get the large banner
-button; with several buttons it's just a normal published post.
+single button the user can pin the post themselves to get the large banner button.
+
+Posts are stored as a reference to the user's original message in their private
+chat with the bot (kept), plus the buttons; re-publishing copies from that message.
 """
 from __future__ import annotations
 
+import json
 from html import escape
 
 from aiogram import Bot, F, Router
@@ -43,7 +47,7 @@ WELCOME = (
     "• <b>One button</b> → you can pin the post to show it as a big button on top.\n"
     "• <b>Several buttons</b> → just published to the channel/group.\n\n"
     "First add me as an <b>admin</b> (with <i>Post messages</i>) to your channel or "
-    "group. Then tap below to build a post."
+    "group. Then tap below to build a post — every post you make is saved in /list."
 )
 
 CONTENT_PROMPT = (
@@ -52,6 +56,11 @@ CONTENT_PROMPT = (
     "It will be published exactly as you send it here.\n\n"
     "<i>One photo/video per post — albums can't carry buttons.</i>"
 )
+
+_KIND_ICON = {
+    "photo": "📷", "video": "🎬", "animation": "🎞", "document": "📎",
+    "audio": "🎵", "voice": "🎤", "video_note": "⭕", "text": "📝",
+}
 
 
 class PostFlow(StatesGroup):
@@ -80,6 +89,13 @@ async def cmd_new(message: Message, state: FSMContext) -> None:
 async def cmd_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer("Cancelled. Send /new to start over.", reply_markup=kb.menu_keyboard())
+
+
+@router.message(Command("list"), StateFilter("*"))
+async def cmd_list(message: Message, state: FSMContext) -> None:
+    # registered with the other commands so it wins over state message handlers
+    await state.clear()
+    await _show_list(message, message.from_user.id, page=0, edit=False)
 
 
 @router.callback_query(F.data == "new")
@@ -114,6 +130,7 @@ async def step_content(message: Message, state: FSMContext) -> None:
     await state.update_data(
         content_chat_id=message.chat.id,
         content_message_id=message.message_id,
+        label=_post_label(message),
         buttons=[],
     )
     await state.set_state(PostFlow.button_text)
@@ -197,6 +214,17 @@ async def cb_add_button(cq: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(PostFlow.more, F.data == "done")
 async def cb_done(cq: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     await cq.answer()
+    data = await state.get_data()
+    try:
+        await repo.save_post(
+            user_id=cq.from_user.id,
+            content_chat_id=data["content_chat_id"],
+            content_message_id=data["content_message_id"],
+            buttons=data["buttons"],
+            label=data.get("label", ""),
+        )
+    except Exception as e:  # noqa: BLE001 — saving must not block publishing
+        logger.warning(f"save_post failed: {e}")
     await _preview_and_pick(cq.message, cq.from_user.id, state, bot)
 
 
@@ -221,14 +249,15 @@ async def _preview_and_pick(message: Message, user_id: int, state: FSMContext, b
     await state.set_state(PostFlow.choose_channel)
     channels = await repo.list_channels(user_id)
     n = len(data["buttons"])
+    saved = "Saved ✅ — find it any time in /list."
     if channels:
         await message.answer(
-            f"👆 <b>Preview</b> ({n} button(s)). Where should I publish it?",
+            f"👆 <b>Preview</b> ({n} button(s)). {saved}\n\nPublish it now?",
             reply_markup=kb.channels_keyboard(channels),
         )
     else:
         await message.answer(
-            f"👆 <b>Preview</b> ({n} button(s)).\n\n"
+            f"👆 <b>Preview</b> ({n} button(s)). {saved}\n\n"
             "I'm not an admin in any of your channels yet:\n"
             "1. Add me as <b>admin</b> (with <i>Post messages</i>) to your channel/group.\n"
             "2. Then <b>forward any message</b> from it here, or send its "
@@ -310,6 +339,110 @@ async def _publish(message: Message, user_id: int, chat_id: int, state: FSMConte
     await state.clear()
 
 
+# --------------------------------------------------------------- saved posts (/list)
+
+@router.callback_query(F.data == "list")
+async def cb_open_list(cq: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await cq.answer()
+    await _show_list(cq.message, cq.from_user.id, page=0, edit=False)
+
+
+@router.callback_query(F.data.startswith("post:page:"))
+async def cb_list_page(cq: CallbackQuery) -> None:
+    page = int(cq.data.split(":")[2])
+    await cq.answer()
+    await _show_list(cq.message, cq.from_user.id, page=page, edit=True)
+
+
+async def _show_list(message: Message, user_id: int, page: int, edit: bool) -> None:
+    total = await repo.count_posts(user_id)
+    if total == 0:
+        text = "You have no saved posts yet. Send /new to create one."
+        markup = kb.menu_keyboard()
+    else:
+        per = kb.POSTS_PER_PAGE
+        pages = (total + per - 1) // per
+        page = max(0, min(page, pages - 1))
+        items = await repo.list_posts(user_id, limit=per, offset=page * per)
+        text = f"📋 <b>Your saved posts</b> ({total}). Tap one to open:"
+        markup = kb.saved_posts_keyboard(items, page, total)
+
+    if edit:
+        try:
+            await message.edit_text(text, reply_markup=markup)
+            return
+        except TelegramBadRequest:
+            pass
+    await message.answer(text, reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("post:open:"))
+async def cb_post_open(cq: CallbackQuery, bot: Bot) -> None:
+    post = await repo.get_post(int(cq.data.split(":")[2]), cq.from_user.id)
+    if post is None:
+        await cq.answer("Post not found", show_alert=True)
+        return
+    await cq.answer()
+    buttons = json.loads(post.buttons_json)
+    try:
+        await bot.copy_message(
+            chat_id=cq.from_user.id,
+            from_chat_id=post.content_chat_id,
+            message_id=post.content_message_id,
+            reply_markup=kb.post_buttons(buttons),
+        )
+    except TelegramBadRequest as e:
+        logger.warning(f"preview of saved post {post.id} failed: {e}")
+        await cq.message.answer("⚠️ Couldn't render this saved post — the original message is gone.")
+    await cq.message.answer(
+        f"👆 <b>{escape(post.label or 'Post')}</b> — {len(buttons)} button(s).",
+        reply_markup=kb.post_detail_keyboard(post.id),
+    )
+
+
+@router.callback_query(F.data.startswith("post:pub:"))
+async def cb_post_publish(cq: CallbackQuery, state: FSMContext) -> None:
+    post = await repo.get_post(int(cq.data.split(":")[2]), cq.from_user.id)
+    if post is None:
+        await cq.answer("Post not found", show_alert=True)
+        return
+    await cq.answer()
+    await state.clear()
+    await state.update_data(
+        content_chat_id=post.content_chat_id,
+        content_message_id=post.content_message_id,
+        buttons=json.loads(post.buttons_json),
+    )
+    await state.set_state(PostFlow.choose_channel)
+    channels = await repo.list_channels(cq.from_user.id)
+    if channels:
+        await cq.message.answer("Where should I publish it?", reply_markup=kb.channels_keyboard(channels))
+    else:
+        await cq.message.answer(
+            "I'm not an admin in any of your channels yet. Add me as <b>admin</b> "
+            "(with <i>Post messages</i>), then forward a message from it here or send its "
+            "<code>@username</code>.",
+            reply_markup=kb.channels_keyboard([]),
+        )
+
+
+@router.callback_query(F.data.startswith("post:delok:"))
+async def cb_post_delete_ok(cq: CallbackQuery) -> None:
+    ok = await repo.delete_post(int(cq.data.split(":")[2]), cq.from_user.id)
+    await cq.answer("Deleted" if ok else "Not found")
+    await _show_list(cq.message, cq.from_user.id, page=0, edit=False)
+
+
+@router.callback_query(F.data.startswith("post:del:"))
+async def cb_post_delete(cq: CallbackQuery) -> None:
+    post_id = int(cq.data.split(":")[2])
+    await cq.answer()
+    await cq.message.answer(
+        "Delete this saved post?", reply_markup=kb.delete_confirm_keyboard(post_id)
+    )
+
+
 # --------------------------------------------------------------- channel tracking
 
 @router.my_chat_member()
@@ -371,6 +504,29 @@ async def cb_noop(cq: CallbackQuery) -> None:
 
 
 # --------------------------------------------------------------- helpers
+
+def _post_label(message: Message) -> str:
+    """Short, plain-text label for the saved-posts list."""
+    if message.photo:
+        kind = "photo"
+    elif message.video:
+        kind = "video"
+    elif message.animation:
+        kind = "animation"
+    elif message.video_note:
+        kind = "video_note"
+    elif message.audio:
+        kind = "audio"
+    elif message.voice:
+        kind = "voice"
+    elif message.document:
+        kind = "document"
+    else:
+        kind = "text"
+    icon = _KIND_ICON.get(kind, "📄")
+    plain = (message.text or message.caption or "").strip().replace("\n", " ")
+    return f"{icon} {plain[:40]}" if plain else f"{icon} ({kind})"
+
 
 async def _resolve_chat(message: Message, bot: Bot):
     origin = message.forward_origin

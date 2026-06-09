@@ -21,9 +21,15 @@ COLORS: dict[str, dict] = {
 }
 
 
+POSTS_PER_PAGE = 5
+
+
 def menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="➕ Create post", callback_data="new")]]
+        inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Create post", callback_data="new")],
+            [InlineKeyboardButton(text="📋 My posts", callback_data="list")],
+        ]
     )
 
 
@@ -71,3 +77,40 @@ def channels_keyboard(channels: Iterable) -> InlineKeyboardMarkup:
     ]
     rows.append([InlineKeyboardButton(text="❌ Cancel", callback_data="cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def saved_posts_keyboard(posts: Iterable, page: int, total: int) -> InlineKeyboardMarkup:
+    """A page of saved posts (one per row) + prev/next nav when there's more than one page."""
+    rows = [
+        [InlineKeyboardButton(text=(p.label or f"Post {p.id}")[:60], callback_data=f"post:open:{p.id}")]
+        for p in posts
+    ]
+    total_pages = max(1, (total + POSTS_PER_PAGE - 1) // POSTS_PER_PAGE)
+    if total_pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton(text="◀️", callback_data=f"post:page:{page - 1}"))
+        nav.append(InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="post:noop"))
+        if page < total_pages - 1:
+            nav.append(InlineKeyboardButton(text="▶️", callback_data=f"post:page:{page + 1}"))
+        rows.append(nav)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def post_detail_keyboard(post_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📤 Publish", callback_data=f"post:pub:{post_id}")],
+            [InlineKeyboardButton(text="🗑 Delete", callback_data=f"post:del:{post_id}")],
+            [InlineKeyboardButton(text="⬅️ Back to list", callback_data="post:page:0")],
+        ]
+    )
+
+
+def delete_confirm_keyboard(post_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Yes, delete", callback_data=f"post:delok:{post_id}")],
+            [InlineKeyboardButton(text="⬅️ Cancel", callback_data=f"post:open:{post_id}")],
+        ]
+    )
