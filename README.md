@@ -37,7 +37,22 @@ cp .env.example .env       # then put your BOT_TOKEN in .env
 
 Commands: `/new` start a post · `/cancel` cancel · `/start` menu.
 
-## Deploy (client server)
+## Deploy (Linux server, systemd)
 
-`./deploy.sh` installs it as a `systemd` service (Linux). See the script for
-details. SQLite stores the list of channels in `data/`.
+```bash
+git clone <repo> && cd hossam-button-bot
+./setup.sh                 # picks Python 3.10-3.14, builds .venv, installs deps
+cp .env.example .env       # then put the real BOT_TOKEN in .env
+sudo ./deploy.sh           # installs + starts a systemd service
+```
+
+Manage it:
+
+```bash
+systemctl status hossam-button-bot
+journalctl -u hossam-button-bot -f
+sudo ./deploy.sh           # run again to update: git pull + restart
+```
+
+State: SQLite (the list of admin channels) lives in `data/`, logs in `logs/` —
+both are created automatically on first run.

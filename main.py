@@ -3,6 +3,7 @@ import asyncio
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import BotCommand
 from loguru import logger
 
 from config import BOT_TOKEN
@@ -23,6 +24,14 @@ async def main() -> None:
     dp.include_router(router)
 
     me = await bot.get_me()
+    try:
+        await bot.set_my_commands([
+            BotCommand(command="new", description="Create a post"),
+            BotCommand(command="cancel", description="Cancel the current post"),
+        ])
+    except Exception as e:  # noqa: BLE001 — cosmetic, must not block startup
+        logger.warning(f"set_my_commands failed: {e}")
+
     logger.info(f"Bot @{me.username} (id={me.id}) started")
     try:
         # resolve_used_update_types() makes sure my_chat_member updates are delivered

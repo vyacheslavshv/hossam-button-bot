@@ -35,6 +35,12 @@ if [ ! -d "$PROJECT_DIR/.venv" ]; then
     exit 1
 fi
 
+if [ ! -f "$PROJECT_DIR/.env" ] || ! grep -q "^BOT_TOKEN=." "$PROJECT_DIR/.env"; then
+    echo "Error: .env with a BOT_TOKEN not found."
+    echo "Run:  cp .env.example .env   and put your token in it."
+    exit 1
+fi
+
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=${PROJECT_NAME}

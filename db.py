@@ -1,6 +1,8 @@
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -39,6 +41,13 @@ async def init_db() -> None:
     """Create tables on startup. The bot has a single small table, so we skip
     migrations entirely — this is idempotent and runs every boot."""
     import models  # noqa: F401  (register models on Base.metadata)
+
+    # make sure the sqlite directory (e.g. data/) exists on a fresh server
+    url = make_url(DATABASE_URL)
+    if url.database and url.get_backend_name().startswith("sqlite"):
+        db_dir = os.path.dirname(url.database)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
