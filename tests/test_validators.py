@@ -29,16 +29,19 @@ def test_four_colors_offered():
     assert set(kb.COLORS) == {"default", "primary", "success", "danger"}
 
 
-def test_post_button_is_a_single_url_button_with_style():
-    markup = kb.post_button("Open", "https://x.com", "success")
+def test_post_buttons_one_per_row_with_styles():
+    markup = kb.post_buttons([
+        {"text": "Open", "url": "https://x.com", "color": "success"},
+        {"text": "Join", "url": "https://t.me/y", "color": "default"},
+    ])
+    rows = markup.inline_keyboard
+    assert len(rows) == 2 and all(len(r) == 1 for r in rows)  # single column
+    assert rows[0][0].text == "Open" and rows[0][0].url == "https://x.com"
+    assert rows[0][0].style == "success"
+    assert rows[1][0].style is None  # default = no style field
+
+
+def test_post_buttons_single():
+    markup = kb.post_buttons([{"text": "Go", "url": "https://x.com", "color": "primary"}])
     assert len(markup.inline_keyboard) == 1
-    assert len(markup.inline_keyboard[0]) == 1
-    btn = markup.inline_keyboard[0][0]
-    assert btn.text == "Open"
-    assert btn.url == "https://x.com"
-    assert btn.style == "success"
-
-
-def test_default_color_sends_no_style():
-    btn = kb.post_button("Open", "https://x.com", "default").inline_keyboard[0][0]
-    assert btn.style is None
+    assert markup.inline_keyboard[0][0].style == "primary"

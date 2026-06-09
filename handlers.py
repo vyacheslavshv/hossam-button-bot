@@ -1,11 +1,12 @@
 """All bot logic.
 
 Flow: /start -> Create post -> send content (text or one photo/video/file) ->
-button label -> button link -> button color -> preview + pick a channel ->
-the post is copied into the channel with a single big button and pinned.
+for each button: label -> link -> color, then "add another / done" ->
+preview + pick a channel -> the post is copied into the channel.
 
-The single inline button is the whole point: Telegram renders a one-button
-pinned message as a large button on top of the channel/group.
+Buttons are stacked one per row (single column). The bot does NOT pin: with a
+single button the user can pin the post themselves to get the large banner
+button; with several buttons it's just a normal published post.
 """
 from __future__ import annotations
 
@@ -38,17 +39,18 @@ router.message.filter(F.chat.type == ChatType.PRIVATE)
 
 WELCOME = (
     "👋 <b>Post Builder</b>\n\n"
-    "I build a channel/group post with one big button — the kind Telegram shows "
-    "large on top of a pinned message.\n\n"
-    "First add me as an <b>admin</b> (with <i>Post messages</i> + <i>Pin messages</i>) "
-    "to your channel or group. Then tap below to build a post."
+    "I build a channel/group post with one or more buttons.\n"
+    "• <b>One button</b> → you can pin the post to show it as a big button on top.\n"
+    "• <b>Several buttons</b> → just published to the channel/group.\n\n"
+    "First add me as an <b>admin</b> (with <i>Post messages</i>) to your channel or "
+    "group. Then tap below to build a post."
 )
 
 CONTENT_PROMPT = (
-    "📝 <b>Step 1/4 — Content</b>\n\n"
+    "📝 <b>Step 1 — Content</b>\n\n"
     "Send the post itself: text, or a photo / video / file (with an optional caption). "
     "It will be published exactly as you send it here.\n\n"
-    "<i>One photo/video per post — albums can't carry a button.</i>"
+    "<i>One photo/video per post — albums can't carry buttons.</i>"
 )
 
 
@@ -57,6 +59,7 @@ class PostFlow(StatesGroup):
     button_text = State()
     button_url = State()
     color = State()
+    more = State()          # "add another button or publish?"
     choose_channel = State()
 
 
@@ -105,22 +108,23 @@ async def step_content(message: Message, state: FSMContext) -> None:
     if message.media_group_id:
         await message.answer(
             "That's an album. Send a <b>single</b> photo/video or text — a post with "
-            "a button can only be one message."
+            "buttons can only be one message."
         )
         return
     await state.update_data(
         content_chat_id=message.chat.id,
         content_message_id=message.message_id,
+        buttons=[],
     )
     await state.set_state(PostFlow.button_text)
     await message.answer(
-        "🔘 <b>Step 2/4 — Button label</b>\n\n"
-        "Send the text to show on the button (e.g. <code>Open Website</code> or "
+        "🔘 <b>Step 2 — Buttons</b>\n\n"
+        "Send the text for the first button (e.g. <code>Open Website</code> or "
         "<code>Join now</code>)."
     )
 
 
-# --------------------------------------------------------------- step 2: label
+# --------------------------------------------------------------- per-button: label
 
 @router.message(PostFlow.button_text)
 async def step_button_text(message: Message, state: FSMContext) -> None:
@@ -128,16 +132,15 @@ async def step_button_text(message: Message, state: FSMContext) -> None:
     if not text:
         await message.answer("Please send the button label as plain text.")
         return
-    await state.update_data(button_text=text[:64])
+    await state.update_data(cur_text=text[:64])
     await state.set_state(PostFlow.button_url)
     await message.answer(
-        "🔗 <b>Step 3/4 — Button link</b>\n\n"
-        "Send the link the button opens — a website, a bot, a channel… any "
+        "🔗 Send the link this button opens — a website, a bot, a channel… any "
         "<code>https://</code> or <code>t.me/</code> link (or an <code>@handle</code>)."
     )
 
 
-# --------------------------------------------------------------- step 3: link
+# --------------------------------------------------------------- per-button: link
 
 @router.message(PostFlow.button_url)
 async def step_button_url(message: Message, state: FSMContext) -> None:
@@ -149,22 +152,30 @@ async def step_button_url(message: Message, state: FSMContext) -> None:
             "<code>@yourchannel</code>."
         )
         return
-    await state.update_data(button_url=url)
+    await state.update_data(cur_url=url)
     await state.set_state(PostFlow.color)
-    await message.answer("🎨 <b>Step 4/4 — Button color</b>\n\nPick a color:", reply_markup=kb.color_keyboard())
+    await message.answer("🎨 Pick a color for this button:", reply_markup=kb.color_keyboard())
 
 
-# --------------------------------------------------------------- step 4: color
+# --------------------------------------------------------------- per-button: color
 
 @router.callback_query(PostFlow.color, F.data.startswith("color:"))
-async def step_color(cq: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+async def step_color(cq: CallbackQuery, state: FSMContext) -> None:
     color = cq.data.split(":", 1)[1]
     if color not in kb.COLORS:
         await cq.answer()
         return
-    await state.update_data(color=color)
     await cq.answer(kb.COLORS[color]["label"])
-    await _preview_and_pick(cq.message, cq.from_user.id, state, bot)
+    data = await state.get_data()
+    buttons = data.get("buttons", [])
+    buttons.append({"text": data["cur_text"], "url": data["cur_url"], "color": color})
+    await state.update_data(buttons=buttons)
+    await state.set_state(PostFlow.more)
+    await cq.message.answer(
+        f"✅ Added <b>{escape(data['cur_text'])}</b> ({kb.COLORS[color]['label']}). "
+        f"You now have <b>{len(buttons)}</b> button(s).\n\nAdd another, or publish?",
+        reply_markup=kb.more_keyboard(),
+    )
 
 
 @router.message(PostFlow.color)
@@ -172,9 +183,31 @@ async def step_color_text(message: Message) -> None:
     await message.answer("Pick a color using the buttons 👇", reply_markup=kb.color_keyboard())
 
 
+# --------------------------------------------------------------- add another / done
+
+@router.callback_query(PostFlow.more, F.data == "addbtn")
+async def cb_add_button(cq: CallbackQuery, state: FSMContext) -> None:
+    await cq.answer()
+    data = await state.get_data()
+    n = len(data.get("buttons", [])) + 1
+    await state.set_state(PostFlow.button_text)
+    await cq.message.answer(f"🔘 Send the text for button #{n}:")
+
+
+@router.callback_query(PostFlow.more, F.data == "done")
+async def cb_done(cq: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    await cq.answer()
+    await _preview_and_pick(cq.message, cq.from_user.id, state, bot)
+
+
+@router.message(PostFlow.more)
+async def step_more_text(message: Message) -> None:
+    await message.answer("Use the buttons below 👇", reply_markup=kb.more_keyboard())
+
+
 async def _preview_and_pick(message: Message, user_id: int, state: FSMContext, bot: Bot) -> None:
     data = await state.get_data()
-    markup = kb.post_button(data["button_text"], data["button_url"], data["color"])
+    markup = kb.post_buttons(data["buttons"])
     try:
         await bot.copy_message(
             chat_id=user_id,
@@ -187,15 +220,15 @@ async def _preview_and_pick(message: Message, user_id: int, state: FSMContext, b
 
     await state.set_state(PostFlow.choose_channel)
     channels = await repo.list_channels(user_id)
-    label = kb.COLORS[data["color"]]["label"]
+    n = len(data["buttons"])
     if channels:
         await message.answer(
-            f"👆 <b>Preview</b> ({label} button). Where should I publish it?",
+            f"👆 <b>Preview</b> ({n} button(s)). Where should I publish it?",
             reply_markup=kb.channels_keyboard(channels),
         )
     else:
         await message.answer(
-            f"👆 <b>Preview</b> ({label} button).\n\n"
+            f"👆 <b>Preview</b> ({n} button(s)).\n\n"
             "I'm not an admin in any of your channels yet:\n"
             "1. Add me as <b>admin</b> (with <i>Post messages</i>) to your channel/group.\n"
             "2. Then <b>forward any message</b> from it here, or send its "
@@ -248,7 +281,7 @@ async def add_channel(message: Message, state: FSMContext, bot: Bot) -> None:
 
 async def _publish(message: Message, user_id: int, chat_id: int, state: FSMContext, bot: Bot) -> None:
     data = await state.get_data()
-    markup = kb.post_button(data["button_text"], data["button_url"], data["color"])
+    markup = kb.post_buttons(data["buttons"])
     try:
         sent = await bot.copy_message(
             chat_id=chat_id,
@@ -265,17 +298,14 @@ async def _publish(message: Message, user_id: int, chat_id: int, state: FSMConte
         await state.clear()
         return
 
-    pinned = await _try_pin(bot, chat_id, sent.message_id)
     ch = await repo.get_channel(chat_id)
     title = escape((ch.title if ch else "") or "the channel")
-
-    text = f"✅ Published to <b>{title}</b>"
-    text += " and pinned it 📌." if pinned else (
-        ".\n⚠️ I couldn't pin it — give me <i>Pin messages</i> permission, or pin it manually."
-    )
+    text = f"✅ Published to <b>{title}</b>."
     link = _post_link(chat_id, sent.message_id)
     if link:
         text += f"\n\n🔗 {link}"
+    if len(data["buttons"]) == 1:
+        text += "\n\n<i>Tip: pin it in the channel to show the button as a big banner on top.</i>"
     await message.answer(text, reply_markup=kb.menu_keyboard())
     await state.clear()
 
@@ -294,7 +324,7 @@ async def on_my_chat_member(event: ChatMemberUpdated, bot: Bot) -> None:
     who = event.from_user.id if event.from_user else 0
 
     if new_status not in ("administrator", "creator"):
-        # demoted / removed -> can't reliably post or pin anymore
+        # demoted / removed -> can't post anymore
         await repo.deactivate_channel(chat.id)
         logger.info(f"lost rights in {chat.title!r} ({chat.id}) status={new_status}")
         return
@@ -377,15 +407,6 @@ async def _bot_rights(bot: Bot, chat_id: int) -> tuple[bool, bool]:
         can_pin = getattr(member, "can_pin_messages", None) is not False
         return can_post, can_pin
     return False, False
-
-
-async def _try_pin(bot: Bot, chat_id: int, message_id: int) -> bool:
-    try:
-        await bot.pin_chat_message(chat_id=chat_id, message_id=message_id, disable_notification=True)
-        return True
-    except TelegramBadRequest as e:
-        logger.info(f"pin failed for {chat_id}: {e}")
-        return False
 
 
 def _post_link(chat_id: int, message_id: int) -> str | None:

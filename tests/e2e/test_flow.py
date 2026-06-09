@@ -1,7 +1,10 @@
-"""End-to-end: build a post (photo + text) with one colored button, publish it
-into a real channel, and confirm it's posted with a single button and pinned.
+"""End-to-end: build a post (photo / text / document) with one or more buttons and
+publish it into a real channel/group. The bot does NOT pin.
 
 Owner = @vyatg (tg_client). The bot must be running with the test token.
+
+NOTE: these were synced to the multi-button / no-pin flow but not re-run in that
+session — run the bot + `pytest tests/e2e` to execute them.
 """
 import asyncio
 
@@ -10,7 +13,7 @@ from telethon.tl.functions.channels import (
     DeleteChannelRequest,
     InviteToChannelRequest,
 )
-from telethon.tl.types import InputMessagesFilterPinned, MessageEntityBold
+from telethon.tl.types import MessageEntityBold
 
 from tests.e2e._helpers import (
     button_texts,
@@ -23,6 +26,14 @@ from tests.e2e._helpers import (
 )
 
 CHANNEL_TITLE = "ButtonBot E2E"
+
+
+async def _finish_one_button(tg_client, bot, color_prompt, color_label, channel_title):
+    """Click a color, then 'Done' on the add-another step, and return the channel picker."""
+    await find_button(color_prompt, color_label).click()
+    more = await wait_for_msg_with_button(tg_client, bot, "Add another", after_id=color_prompt.id)
+    await find_button(more, "Done").click()
+    return await wait_for_msg_with_button(tg_client, bot, channel_title, after_id=more.id)
 
 
 async def test_start_shows_menu(tg_client, test_bot_username, _wait_for_bot):
@@ -50,29 +61,26 @@ async def test_album_is_rejected(tg_client, test_bot_username, sample_photo, _wa
     await send_and_wait(tg_client, bot, "/cancel")
 
 
-async def test_photo_post_published_and_pinned(
+async def test_photo_post_published(
     tg_client, test_bot_username, test_channel, sample_photo, _wait_for_bot
 ):
     bot = await tg_client.get_entity(test_bot_username)
 
     await send_and_wait(tg_client, bot, "/new")
     label_prompt = await send_file_and_wait(tg_client, bot, sample_photo)
-    assert "Button label" in label_prompt.message, label_prompt.message
+    assert "button" in label_prompt.message.lower(), label_prompt.message
 
     url_prompt = await send_and_wait(tg_client, bot, "Open Website")
-    assert "Button link" in url_prompt.message, url_prompt.message
+    assert "link" in url_prompt.message.lower(), url_prompt.message
 
     color_prompt = await send_and_wait(tg_client, bot, "https://example.com")
     assert "color" in color_prompt.message.lower(), color_prompt.message
 
-    # pick green -> bot pushes a preview AND a channel picker
-    await find_button(color_prompt, "Green").click()
-    picker = await wait_for_msg_with_button(tg_client, bot, CHANNEL_TITLE, after_id=color_prompt.id)
-
+    picker = await _finish_one_button(tg_client, bot, color_prompt, "Green", CHANNEL_TITLE)
     after = await latest_msg_id(tg_client, bot)
     await find_button(picker, CHANNEL_TITLE).click()
     confirm = await wait_for_reply(tg_client, bot, after)
-    assert "Published" in confirm.message and "pinned" in confirm.message.lower(), confirm.message
+    assert "Published" in confirm.message, confirm.message
 
     posts = await tg_client.get_messages(test_channel, limit=5)
     post = next((m for m in posts if m.buttons), None)
@@ -83,28 +91,23 @@ async def test_photo_post_published_and_pinned(
     assert btns[0].url.rstrip("/") == "https://example.com", btns[0].url
     assert post.photo is not None, "published post should carry the photo"
 
-    pinned = await tg_client.get_messages(test_channel, limit=1, filter=InputMessagesFilterPinned())
-    assert pinned and pinned[0].id == post.id, "the published post should be pinned"
-
 
 async def test_text_post_published(tg_client, test_bot_username, test_channel, _wait_for_bot):
     bot = await tg_client.get_entity(test_bot_username)
 
     await send_and_wait(tg_client, bot, "/new")
-    await send_and_wait(tg_client, bot, "Hello pinned world")   # content (text)
-    await send_and_wait(tg_client, bot, "Join")                 # label
+    await send_and_wait(tg_client, bot, "Hello channel world")   # content (text)
+    await send_and_wait(tg_client, bot, "Join")                  # label
     color_prompt = await send_and_wait(tg_client, bot, "t.me/durov")  # link
 
-    await find_button(color_prompt, "Blue").click()
-    picker = await wait_for_msg_with_button(tg_client, bot, CHANNEL_TITLE, after_id=color_prompt.id)
-
+    picker = await _finish_one_button(tg_client, bot, color_prompt, "Blue", CHANNEL_TITLE)
     after = await latest_msg_id(tg_client, bot)
     await find_button(picker, CHANNEL_TITLE).click()
     confirm = await wait_for_reply(tg_client, bot, after)
     assert "Published" in confirm.message, confirm.message
 
     posts = await tg_client.get_messages(test_channel, limit=5)
-    assert any("Hello pinned world" in (m.message or "") for m in posts), [m.message for m in posts]
+    assert any("Hello channel world" in (m.message or "") for m in posts), [m.message for m in posts]
 
 
 async def test_formatted_caption_is_preserved(
@@ -117,12 +120,11 @@ async def test_formatted_caption_is_preserved(
         bot, sample_photo, caption="**Big sale** today", parse_mode="md"
     )
     label_prompt = await wait_for_reply(tg_client, bot, sent.id)
-    assert "Button label" in label_prompt.message, label_prompt.message
+    assert "button" in label_prompt.message.lower(), label_prompt.message
 
     await send_and_wait(tg_client, bot, "Shop now")
     color_prompt = await send_and_wait(tg_client, bot, "https://example.com")
-    await find_button(color_prompt, "Red").click()
-    picker = await wait_for_msg_with_button(tg_client, bot, CHANNEL_TITLE, after_id=color_prompt.id)
+    picker = await _finish_one_button(tg_client, bot, color_prompt, "Red", CHANNEL_TITLE)
     after = await latest_msg_id(tg_client, bot)
     await find_button(picker, CHANNEL_TITLE).click()
     confirm = await wait_for_reply(tg_client, bot, after)
@@ -144,12 +146,11 @@ async def test_document_post_published(
     await send_and_wait(tg_client, bot, "/new")
     sent = await tg_client.send_file(bot, sample_photo, force_document=True)
     label_prompt = await wait_for_reply(tg_client, bot, sent.id)
-    assert "Button label" in label_prompt.message, label_prompt.message
+    assert "button" in label_prompt.message.lower(), label_prompt.message
 
     await send_and_wait(tg_client, bot, "Download")
     color_prompt = await send_and_wait(tg_client, bot, "https://example.com/file")
-    await find_button(color_prompt, "Default").click()  # the no-style color
-    picker = await wait_for_msg_with_button(tg_client, bot, CHANNEL_TITLE, after_id=color_prompt.id)
+    picker = await _finish_one_button(tg_client, bot, color_prompt, "Default", CHANNEL_TITLE)
     after = await latest_msg_id(tg_client, bot)
     await find_button(picker, CHANNEL_TITLE).click()
     confirm = await wait_for_reply(tg_client, bot, after)
@@ -159,6 +160,37 @@ async def test_document_post_published(
     post = next((m for m in posts if m.document and m.buttons), None)
     assert post is not None, "document post not found in channel"
     assert len([b for row in post.buttons for b in row]) == 1
+
+
+async def test_two_buttons_published(tg_client, test_bot_username, test_channel, _wait_for_bot):
+    # the new multi-button feature: two buttons stacked in a single column
+    bot = await tg_client.get_entity(test_bot_username)
+    await send_and_wait(tg_client, bot, "/new")
+    await send_and_wait(tg_client, bot, "Two-button post")        # content
+    await send_and_wait(tg_client, bot, "First")                  # button 1 label
+    color_prompt = await send_and_wait(tg_client, bot, "https://example.com")  # button 1 link
+    await find_button(color_prompt, "Green").click()
+    more = await wait_for_msg_with_button(tg_client, bot, "Add another", after_id=color_prompt.id)
+
+    await find_button(more, "Add another").click()               # add a 2nd button
+    await send_and_wait(tg_client, bot, "Second")                # button 2 label
+    color_prompt2 = await send_and_wait(tg_client, bot, "https://example.org")  # button 2 link
+    await find_button(color_prompt2, "Red").click()
+    more2 = await wait_for_msg_with_button(tg_client, bot, "Add another", after_id=color_prompt2.id)
+    await find_button(more2, "Done").click()
+    picker = await wait_for_msg_with_button(tg_client, bot, CHANNEL_TITLE, after_id=more2.id)
+
+    after = await latest_msg_id(tg_client, bot)
+    await find_button(picker, CHANNEL_TITLE).click()
+    confirm = await wait_for_reply(tg_client, bot, after)
+    assert "Published" in confirm.message, confirm.message
+
+    posts = await tg_client.get_messages(test_channel, limit=5)
+    post = next((m for m in posts if "Two-button post" in (m.message or "")), None)
+    assert post is not None, [m.message for m in posts]
+    # two buttons, each on its own row (single column)
+    assert post.buttons is not None and len(post.buttons) == 2, post.buttons
+    assert all(len(row) == 1 for row in post.buttons), "buttons should be one per row"
 
 
 async def test_dm_sent_to_adder_not_the_chat(tg_client, test_bot_username, _wait_for_bot):
@@ -185,7 +217,7 @@ async def test_group_gets_only_the_post_no_fallback_spam(
     tg_client, test_bot_username, sample_photo, _wait_for_bot
 ):
     # regression: the bot must NOT post "build a post" / any UI text into a group,
-    # not when added, not after pinning. Only the published post may appear there.
+    # not when added, not after publishing. Only the published post may appear there.
     bot = await tg_client.get_entity(test_bot_username)
     created = await tg_client(
         CreateChannelRequest(title="ButtonBot Group E2E", about="e2e", megagroup=True)
@@ -204,10 +236,7 @@ async def test_group_gets_only_the_post_no_fallback_spam(
         await send_file_and_wait(tg_client, bot, sample_photo)
         await send_and_wait(tg_client, bot, "Open")
         color_prompt = await send_and_wait(tg_client, bot, "https://example.com")
-        await find_button(color_prompt, "Green").click()
-        picker = await wait_for_msg_with_button(
-            tg_client, bot, "ButtonBot Group E2E", after_id=color_prompt.id
-        )
+        picker = await _finish_one_button(tg_client, bot, color_prompt, "Green", "ButtonBot Group E2E")
         after = await latest_msg_id(tg_client, bot)
         await find_button(picker, "ButtonBot Group E2E").click()
         confirm = await wait_for_reply(tg_client, bot, after)

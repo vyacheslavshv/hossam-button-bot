@@ -42,12 +42,26 @@ def color_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def post_button(text: str, url: str, color: str) -> InlineKeyboardMarkup:
-    """The single big button that goes on the published post."""
-    style = COLORS.get(color, COLORS["default"])["style"]
+def more_keyboard() -> InlineKeyboardMarkup:
+    """After a button is added: add another, or finish and publish."""
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=text, url=url, style=style)]]
+        inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Add another button", callback_data="addbtn")],
+            [InlineKeyboardButton(text="✅ Done — choose channel", callback_data="done")],
+        ]
     )
+
+
+def post_buttons(buttons: list[dict]) -> InlineKeyboardMarkup:
+    """The buttons that go on the published post — one per row (single column).
+
+    Each item is {"text": str, "url": str, "color": <COLORS key>}.
+    """
+    rows = []
+    for b in buttons:
+        style = COLORS.get(b.get("color", "default"), COLORS["default"])["style"]
+        rows.append([InlineKeyboardButton(text=b["text"], url=b["url"], style=style)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def channels_keyboard(channels: Iterable) -> InlineKeyboardMarkup:
