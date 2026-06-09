@@ -12,7 +12,8 @@ from __future__ import annotations
 from html import escape
 
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.enums import ChatType
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -29,6 +30,11 @@ import repo
 from validators import normalize_url
 
 router = Router()
+
+# The bot is a DM-only assistant. It must never write into a group/channel except
+# the published post itself, so we ignore every message that isn't from a private
+# chat — group chatter AND service messages (bot added, message pinned, etc.).
+router.message.filter(F.chat.type == ChatType.PRIVATE)
 
 WELCOME = (
     "👋 <b>Post Builder</b>\n\n"
@@ -277,32 +283,48 @@ async def _publish(message: Message, user_id: int, chat_id: int, state: FSMConte
 # --------------------------------------------------------------- channel tracking
 
 @router.my_chat_member()
-async def on_my_chat_member(event: ChatMemberUpdated) -> None:
+async def on_my_chat_member(event: ChatMemberUpdated, bot: Bot) -> None:
     chat = event.chat
     if chat.type not in ("channel", "supergroup", "group"):
         return
 
     member = event.new_chat_member
-    status = member.status
+    new_status = member.status
+    old_status = event.old_chat_member.status
     who = event.from_user.id if event.from_user else 0
 
-    if status in ("administrator", "creator"):
-        can_post = getattr(member, "can_post_messages", None)
-        can_pin = getattr(member, "can_pin_messages", None)
-        await repo.upsert_channel(
-            chat_id=chat.id,
-            title=chat.title or "",
-            type_=chat.type,
-            added_by=who,
-            can_post=(can_post is not False),
-            can_pin=(can_pin is not False),
-            active=True,
-        )
-        logger.info(f"admin in {chat.title!r} ({chat.id}) status={status} by={who}")
-    else:
-        # member / left / kicked / restricted -> can't reliably post or pin
+    if new_status not in ("administrator", "creator"):
+        # demoted / removed -> can't reliably post or pin anymore
         await repo.deactivate_channel(chat.id)
-        logger.info(f"lost rights in {chat.title!r} ({chat.id}) status={status}")
+        logger.info(f"lost rights in {chat.title!r} ({chat.id}) status={new_status}")
+        return
+
+    can_post = getattr(member, "can_post_messages", None)
+    can_pin = getattr(member, "can_pin_messages", None)
+    await repo.upsert_channel(
+        chat_id=chat.id,
+        title=chat.title or "",
+        type_=chat.type,
+        added_by=who,
+        can_post=(can_post is not False),
+        can_pin=(can_pin is not False),
+        active=True,
+    )
+    logger.info(f"admin in {chat.title!r} ({chat.id}) status={new_status} by={who}")
+
+    # Tell the person who added the bot — privately, never in the chat itself —
+    # but only on a fresh promotion and only if they have an open DM with the bot.
+    freshly_added = old_status not in ("administrator", "creator")
+    if who and freshly_added:
+        try:
+            await bot.send_message(
+                who,
+                f"✅ I'm now an admin in <b>{escape(chat.title or 'your chat')}</b>.\n"
+                "Send /new to build a post for it.",
+                reply_markup=kb.menu_keyboard(),
+            )
+        except (TelegramForbiddenError, TelegramBadRequest) as e:
+            logger.info(f"can't DM {who} about {chat.id}: {e}")
 
 
 # --------------------------------------------------------------- fallback

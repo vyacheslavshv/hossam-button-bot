@@ -3,6 +3,13 @@ into a real channel, and confirm it's posted with a single button and pinned.
 
 Owner = @vyatg (tg_client). The bot must be running with the test token.
 """
+import asyncio
+
+from telethon.tl.functions.channels import (
+    CreateChannelRequest,
+    DeleteChannelRequest,
+    InviteToChannelRequest,
+)
 from telethon.tl.types import InputMessagesFilterPinned, MessageEntityBold
 
 from tests.e2e._helpers import (
@@ -152,3 +159,67 @@ async def test_document_post_published(
     post = next((m for m in posts if m.document and m.buttons), None)
     assert post is not None, "document post not found in channel"
     assert len([b for row in post.buttons for b in row]) == 1
+
+
+async def test_dm_sent_to_adder_not_the_chat(tg_client, test_bot_username, _wait_for_bot):
+    # adding the bot as admin must notify the adder *in DM*, never in the chat
+    bot = await tg_client.get_entity(test_bot_username)
+    created = await tg_client(
+        CreateChannelRequest(title="ButtonBot DM E2E", about="e2e", megagroup=False)
+    )
+    ch = created.chats[0]
+    try:
+        before = await latest_msg_id(tg_client, bot)
+        await tg_client.edit_admin(
+            ch, bot, is_admin=True, post_messages=True, pin_messages=True,
+            change_info=True, invite_users=True, delete_messages=True,
+            add_admins=False, manage_call=False, title="bot",
+        )
+        dm = await wait_for_reply(tg_client, bot, before, timeout=25)
+        assert "admin in" in dm.message.lower() and "ButtonBot DM E2E" in dm.message, dm.message
+    finally:
+        await tg_client(DeleteChannelRequest(ch))
+
+
+async def test_group_gets_only_the_post_no_fallback_spam(
+    tg_client, test_bot_username, sample_photo, _wait_for_bot
+):
+    # regression: the bot must NOT post "build a post" / any UI text into a group,
+    # not when added, not after pinning. Only the published post may appear there.
+    bot = await tg_client.get_entity(test_bot_username)
+    created = await tg_client(
+        CreateChannelRequest(title="ButtonBot Group E2E", about="e2e", megagroup=True)
+    )
+    group = created.chats[0]
+    try:
+        await tg_client(InviteToChannelRequest(group, [bot]))
+        await tg_client.edit_admin(
+            group, bot, is_admin=True, post_messages=True, pin_messages=True,
+            delete_messages=True, invite_users=True, change_info=True,
+            add_admins=False, manage_call=False, title="bot",
+        )
+        await asyncio.sleep(4)  # let my_chat_member land in the bot
+
+        await send_and_wait(tg_client, bot, "/new")
+        await send_file_and_wait(tg_client, bot, sample_photo)
+        await send_and_wait(tg_client, bot, "Open")
+        color_prompt = await send_and_wait(tg_client, bot, "https://example.com")
+        await find_button(color_prompt, "Green").click()
+        picker = await wait_for_msg_with_button(
+            tg_client, bot, "ButtonBot Group E2E", after_id=color_prompt.id
+        )
+        after = await latest_msg_id(tg_client, bot)
+        await find_button(picker, "ButtonBot Group E2E").click()
+        confirm = await wait_for_reply(tg_client, bot, after)
+        assert "Published" in confirm.message, confirm.message
+
+        await asyncio.sleep(2)
+        bot_posts = 0
+        async for m in tg_client.iter_messages(group, limit=25):
+            assert "build a post" not in (m.message or "").lower(), \
+                f"bot spammed the group: {m.message!r}"
+            if m.buttons:
+                bot_posts += 1
+        assert bot_posts == 1, f"expected exactly 1 bot post in the group, got {bot_posts}"
+    finally:
+        await tg_client(DeleteChannelRequest(group))
