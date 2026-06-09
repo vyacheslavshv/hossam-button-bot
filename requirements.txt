@@ -1,0 +1,6 @@
+aiogram
+loguru
+python-dotenv
+sqlalchemy[asyncio]
+alembic
+aiosqlite
