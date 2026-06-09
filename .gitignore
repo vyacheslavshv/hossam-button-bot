@@ -3,8 +3,12 @@ CLAUDE.md
 data/
 logs/
 .env
+.env.test
 .venv
 venv/
+.pytest_cache/
+.ruff_cache/
+*.session
 
 .DS_Store
 __pycache__/

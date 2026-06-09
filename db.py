@@ -35,5 +35,14 @@ async def session_scope() -> AsyncIterator[AsyncSession]:
         await session.close()
 
 
+async def init_db() -> None:
+    """Create tables on startup. The bot has a single small table, so we skip
+    migrations entirely — this is idempotent and runs every boot."""
+    import models  # noqa: F401  (register models on Base.metadata)
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+
 async def close_db() -> None:
     await engine.dispose()

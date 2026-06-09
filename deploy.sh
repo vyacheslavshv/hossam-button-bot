@@ -17,7 +17,6 @@ if systemctl list-unit-files --no-pager | grep -q "^${PROJECT_NAME}.service"; th
     git pull
     source .venv/bin/activate
     pip install -r requirements.txt
-    alembic upgrade head
 
     systemctl restart "$PROJECT_NAME"
 

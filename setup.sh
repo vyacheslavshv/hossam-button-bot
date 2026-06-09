@@ -18,8 +18,5 @@ pip install -r requirements.txt
 
 echo ""
 echo "Done! Next steps:"
-echo "  1. Configure .env (BOT_TOKEN, optionally DATABASE_URL)"
-echo "  2. Add models to models.py"
-echo "  3. alembic revision --autogenerate -m \"init\""
-echo "  4. alembic upgrade head"
-echo "  5. python main.py"
+echo "  1. cp .env.example .env  and put your BOT_TOKEN in it"
+echo "  2. .venv/bin/python main.py   (tables are created automatically)"
